@@ -95,6 +95,59 @@ rejet de certificat, daté et explicite.
 
 ---
 
+## Étape 3 — Diagnostic
+
+```bash
+sudo kubeadm certs check-expiration
+```
+
+**Capture 3**
+
+![Diagnostic — résiduel <invalid>, repli sur la lecture locale des fichiers PKI](screenshots/03-diagnosis.png)
+
+Détail révélateur : `kubeadm` lui-même essaie normalement de lire sa
+configuration depuis un `ConfigMap` en cluster — et n'y arrive plus,
+pour la même raison que `kubectl`. Il se **rabat silencieusement** sur
+la lecture directe des fichiers PKI locaux, ce qui permet quand même
+d'obtenir le diagnostic (`<invalid>` au lieu d'un compte à rebours) sans
+avoir besoin d'un control plane fonctionnel. Comprendre ce mécanisme de
+repli évite de croire, à tort, que `kubeadm certs check-expiration` est
+lui aussi hors service.
+
+---
+
+## Étape 4 — Réparation : renouvellement des certificats
+
+```bash
+sudo kubeadm certs renew all
+```
+
+**Capture 4**
+
+![Certificats renouvelés via kubeadm certs renew all](screenshots/04-renew-certs.png)
+
+Renouveler les fichiers ne suffit pas : les processus du control plane
+ont déjà les anciens certificats chargés en mémoire. kubelet ne relit
+un pod statique que si son fichier manifeste change (ou disparaît) —
+d'où un aller-retour explicite plutôt qu'un simple redémarrage de
+service :
+
+```bash
+sudo mv /etc/kubernetes/manifests/*.yaml /tmp/manifests-backup/
+```
+
+Vérifier explicitement que les 4 conteneurs ont disparu avant de les
+remettre — un premier essai avec un simple délai fixe s'était avéré
+insuffisant pour `etcd` (plus lent à s'arrêter proprement que les
+autres) :
+
+```bash
+sudo crictl ps | grep -E "etcd|kube-apiserver|kube-controller|kube-scheduler"
+# répéter jusqu'à ce que la liste soit vide
+```
+
+---
+
 ## Décisions techniques clés
 
 <!-- TODO -->
