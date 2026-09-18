@@ -184,6 +184,179 @@ les certificats renouvelés sont bien ceux désormais chargés.
 
 ---
 
+## Étape 6 — Le piège secondaire : un `~/.kube/config` périmé
+
+```bash
+kubectl get nodes
+```
+
+**Capture 6**
+
+![kubectl échoue avec un message différent de l'erreur x509 initiale](screenshots/06-stale-kubeconfig.png)
+
+Certificats renouvelés, pods redémarrés — et pourtant `kubectl` échoue
+encore, avec un message **différent** de l'erreur x509 initiale. La
+cause : `~/.kube/config` est une **copie** de `/etc/kubernetes/admin.conf`
+faite une seule fois, au moment du `kubeadm init` d'origine.
+`kubeadm certs renew` régénère le fichier canonique sous
+`/etc/kubernetes/` — pas les copies qui en ont été tirées ailleurs.
+
+```bash
+diff <(sudo grep client-certificate-data /etc/kubernetes/admin.conf) \
+     <(grep client-certificate-data ~/.kube/config)
+```
+
+**Capture 7**
+
+![Les deux client-certificate-data diffèrent — preuve que ~/.kube/config n'a pas été mis à jour](screenshots/07-diff-confirms-stale.png)
+
+Ce `diff` compare l'unique champ qui compte ici : le certificat client
+encodé en base64 dans chacun des deux fichiers. Les deux blocs
+affichés sont **différents** — la preuve directe, sans ambiguïté, que
+`~/.kube/config` contient toujours l'ancien certificat (celui d'avant
+le renouvellement), alors que `/etc/kubernetes/admin.conf` a bien été
+mis à jour par `kubeadm certs renew all`. Ce n'est pas une hypothèse :
+c'est la donnée elle-même qui le prouve, octet pour octet.
+
+Ce piège dépasse largement ce lab : tout kubeconfig distribué à une
+équipe, un pipeline CI ou un outil tiers avant le renouvellement reste
+signé avec l'ancien certificat et doit être redistribué — un détail
+opérationnel que `kubeadm certs renew all` ne peut pas deviner à votre
+place.
+
+---
+
+## Étape 7 — Un troisième piège : `kubelet.conf` n'est pas non plus couvert
+
+`kubectl` fonctionne de nouveau, mais les 3 nœuds passent `NotReady` :
+
+```bash
+kubectl get nodes -o wide
+```
+
+En cause : `/etc/kubernetes/kubelet.conf` — le kubeconfig que **kubelet
+lui-même** utilise pour parler à l'apiserver — a son propre certificat
+embarqué, avec la même date d'expiration que tout le reste, mais qui
+n'était **pas** dans la liste affichée par `kubeadm certs
+check-expiration` à l'étape 1 (relire cette liste : ni `kubelet.conf`,
+ni aucun fichier "kubelet" n'y figure). C'est un fichier propre à
+**chaque nœud**, généré une seule fois à `kubeadm init`/`kubeadm join`,
+hors du périmètre de `kubeadm certs renew`.
+
+```bash
+sudo journalctl -u kubelet --no-pager -n 15 | grep -iE "x509|certificate|expired|bootstrap"
+```
+
+**Capture 8**
+
+![kubelet lui-même signale un certificat de bootstrap expiré dans kubelet.conf](screenshots/08-kubelet-conf-expired.png)
+
+Le message est explicite : *"No valid client certificate is found but
+the server is not responsive. A restart may be necessary to retrieve
+new initial credentials."* — kubelet a bien détecté le problème, mais
+ne peut pas se réparer seul : il lui faudrait un certificat valide pour
+en négocier un nouveau, et c'est précisément ce qu'il n'a plus.
+
+### Régénérer `kubelet.conf` sur `k8s-master`
+
+`kubeadm` a une phase dédiée à ça, mais elle refuse d'écraser un
+fichier existant si l'URL d'API server qu'elle devine par défaut ne
+correspond pas à celle réellement utilisée — il faut donc l'écarter
+d'abord et lui fournir la bonne adresse explicitement :
+
+```bash
+sudo mv /etc/kubernetes/kubelet.conf /etc/kubernetes/kubelet.conf.expired
+
+cat > /tmp/kubelet-fix-config.yaml <<'EOF'
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.56.10
+  bindPort: 6443
+nodeRegistration:
+  name: k8s-master
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+EOF
+
+sudo kubeadm init phase kubeconfig kubelet --config /tmp/kubelet-fix-config.yaml
+sudo systemctl restart kubelet
+```
+
+**Capture 9**
+
+![kubeadm écrit un nouveau kubelet.conf ("Writing" au lieu de "Using existing")](screenshots/09-kubelet-conf-regenerated.png)
+
+```bash
+sudo journalctl -u kubelet --no-pager -n 10 | grep -iE "x509|certificate|error"
+kubectl get nodes
+```
+
+**Capture 9b**
+
+![k8s-master repassé Ready, les 2 workers encore NotReady](screenshots/09b-master-ready-workers-pending.png)
+
+Plus aucune erreur dans les logs — juste une ligne saine,
+`"Certificate rotation detected, shutting down client connections to
+start using new credentials"` : kubelet a lui-même détecté le nouveau
+certificat et rouvert ses connexions avec. `k8s-master` est de nouveau
+`Ready`. Les deux workers restent `NotReady` : ils ont exactement le
+même problème de `kubelet.conf`, pas encore corrigé.
+
+### Régénérer et distribuer celui des workers
+
+Les workers, eux, n'ont **pas** la clé privée de la CA
+(`/etc/kubernetes/pki/ca.key`) — seul le control-plane peut signer un
+nouveau certificat. Le `kubelet.conf` d'un worker doit donc être généré
+**sur `k8s-master`**, puis transféré. Ce lab n'a pas de confiance SSH
+directe entre les VM, mais elles partagent toutes le même dossier
+`/vagrant` (monté depuis le Mac) — un relais pratique pour ce transfert
+ponctuel.
+
+Sur `k8s-master`, pour `k8s-worker1` :
+
+```bash
+mkdir -p /tmp/worker1-kubeconfig
+
+cat > /tmp/kubelet-fix-worker1.yaml <<'EOF'
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.56.10
+  bindPort: 6443
+nodeRegistration:
+  name: k8s-worker1
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+EOF
+
+sudo kubeadm init phase kubeconfig kubelet \
+  --config /tmp/kubelet-fix-worker1.yaml \
+  --kubeconfig-dir /tmp/worker1-kubeconfig
+
+sudo chmod 644 /tmp/worker1-kubeconfig/kubelet.conf
+sudo cp /tmp/worker1-kubeconfig/kubelet.conf /vagrant/kubelet-worker1.conf.tmp
+```
+
+Puis, depuis une session SSH séparée sur `k8s-worker1` :
+
+```bash
+sudo cp /etc/kubernetes/kubelet.conf /etc/kubernetes/kubelet.conf.expired
+sudo cp /vagrant/kubelet-worker1.conf.tmp /etc/kubernetes/kubelet.conf
+sudo systemctl restart kubelet
+```
+
+Même procédure pour `k8s-worker2` (adapter `nodeRegistration.name` et
+le nom du fichier temporaire).
+
+**Capture 10**
+
+![kubectl get nodes — les 3 nœuds Ready](screenshots/10-all-nodes-ready.png)
+
+---
+
 ## Décisions techniques clés
 
 <!-- TODO -->
