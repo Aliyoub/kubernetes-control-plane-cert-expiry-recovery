@@ -133,8 +133,21 @@ d'où un aller-retour explicite plutôt qu'un simple redémarrage de
 service :
 
 ```bash
+sudo mkdir -p /tmp/manifests-backup
 sudo mv /etc/kubernetes/manifests/*.yaml /tmp/manifests-backup/
 ```
+
+**Capture 4b**
+
+![Manifestes déplacés — /etc/kubernetes/manifests/ vide, les 4 fichiers dans /tmp/manifests-backup/](screenshots/04b-manifests-moved.png)
+
+kubelet surveille en permanence le contenu de
+`/etc/kubernetes/manifests/` (un simple dossier, pas une API) : dès
+qu'un fichier y disparaît, il en déduit que le pod statique
+correspondant doit être arrêté. Le dossier vide ici ne signifie pas
+"le control plane a planté" — c'est une action volontaire et
+réversible, le fichier existe toujours juste à côté, dans
+`/tmp/manifests-backup/`.
 
 Vérifier explicitement que les 4 conteneurs ont disparu avant de les
 remettre — un premier essai avec un simple délai fixe s'était avéré
@@ -145,6 +158,29 @@ autres) :
 sudo crictl ps | grep -E "etcd|kube-apiserver|kube-controller|kube-scheduler"
 # répéter jusqu'à ce que la liste soit vide
 ```
+
+**Capture 4c**
+
+![Les 4 conteneurs ont disparu — seul calico-kube-controllers (sans rapport) reste](screenshots/04c-containers-gone.png)
+
+Confirmation avant de remettre les manifestes : les 4 anciens
+conteneurs ont bien été tués, pas seulement "en cours d'arrêt". Les
+remettre trop tôt (avant cette confirmation) est précisément l'erreur
+qui, lors d'un premier essai, avait laissé `etcd` tourner encore avec
+son ancien certificat.
+
+```bash
+sudo mv /tmp/manifests-backup/*.yaml /etc/kubernetes/manifests/
+sleep 20
+sudo crictl ps | grep -E "etcd|kube-apiserver|kube-controller|kube-scheduler"
+```
+
+**Capture 5**
+
+![Les 4 composants du control plane repartis avec de nouveaux conteneurs (ATTEMPT 0)](screenshots/05-restart-control-plane.png)
+
+Quatre nouveaux ID de conteneur, démarrés à l'instant — la preuve que
+les certificats renouvelés sont bien ceux désormais chargés.
 
 ---
 
