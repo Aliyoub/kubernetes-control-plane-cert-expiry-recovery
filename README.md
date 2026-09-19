@@ -402,6 +402,40 @@ rattraper des horloges qui refusaient de rester où on les avait mises.
 
 ---
 
+## Étape 8 — Vérification fonctionnelle finale
+
+```bash
+kubectl get pods -A | grep -v Running
+```
+
+À ce stade, plusieurs pods applicatifs (ArgoCD, `local-path-provisioner`,
+d'anciens objets en `Terminating`) apparaissent en `ImagePullBackOff` ou
+bloqués — un effet de bord de la simulation, pas une régression du
+control plane : l'horloge encore avancée à 2027 invalide aussi les
+certificats TLS **des registres d'images externes** (leurs certificats
+réels, eux, expirent bien avant 2027) — toute connexion HTTPS sortante
+en souffre également, pas seulement celles vers l'apiserver. Rien à voir
+avec `kubeadm` ; ça se résorbera dès le retour à l'heure réelle.
+
+Le test qui prouve réellement que le control plane est opérationnel ne
+dépend d'aucune image externe :
+
+```bash
+kubectl create ns cert-recovery-verify
+kubectl delete ns cert-recovery-verify
+```
+
+**Capture 12**
+
+![Création et suppression d'un namespace réussies — preuve fonctionnelle complète](screenshots/12-final-functional-test.png)
+
+Un test de bout en bout (création **ET** suppression, pas seulement
+une lecture) — la preuve que le control plane n'est pas seulement
+"joignable" mais pleinement capable d'écrire dans etcd et de faire
+aboutir un cycle de vie complet d'objet.
+
+---
+
 ## Décisions techniques clés
 
 <!-- TODO -->
