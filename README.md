@@ -340,6 +340,17 @@ sudo chmod 644 /tmp/worker1-kubeconfig/kubelet.conf
 sudo cp /tmp/worker1-kubeconfig/kubelet.conf /vagrant/kubelet-worker1.conf.tmp
 ```
 
+**Capture 10**
+
+![kubelet.conf de worker1 généré sur master (--kubeconfig-dir évite d'écraser celui de master) et déposé dans /vagrant](screenshots/10-worker1-kubelet-conf-generated.png)
+
+`--kubeconfig-dir` redirige la sortie vers un dossier temporaire plutôt
+que d'écraser `/etc/kubernetes/kubelet.conf` de `k8s-master` (qu'on
+vient juste de réparer) : `kubeadm` génère ce fichier localement, avec
+la clé privée de la CA disponible ici, puis on le dépose dans
+`/vagrant` — le seul dossier partagé entre les 3 VM sans confiance SSH
+à établir.
+
 Puis, depuis une session SSH séparée sur `k8s-worker1` :
 
 ```bash
@@ -348,12 +359,46 @@ sudo cp /vagrant/kubelet-worker1.conf.tmp /etc/kubernetes/kubelet.conf
 sudo systemctl restart kubelet
 ```
 
-Même procédure pour `k8s-worker2` (adapter `nodeRegistration.name` et
-le nom du fichier temporaire).
+### Un piège de plus : la dérive d'horloge des workers
 
-**Capture 10**
+Après ce redémarrage, `k8s-worker1` restait bloqué avec la même erreur
+`x509`, mais tournée différemment : *"current time ... is before ..."*
+— **avant**, pas après. `systemd-timesyncd` (actif sur les deux
+workers, contrairement à `master`) avait profité de l'accès internet
+de l'adaptateur NAT pour resynchroniser l'horloge sur l'heure réelle,
+dès qu'on avait le dos tourné :
 
-![kubectl get nodes — les 3 nœuds Ready](screenshots/10-all-nodes-ready.png)
+```bash
+timedatectl
+# System clock synchronized: yes / NTP service: active <- la resynchro silencieuse
+```
+
+Correction : désactiver ce second mécanisme de resynchro (en plus de
+`vboxadd-service`), puis réaligner l'horloge sur celle — désormais
+légèrement plus avancée, le temps réel continuant de s'écouler côté
+master — de `k8s-master` :
+
+```bash
+sudo timedatectl set-ntp false
+sudo systemctl stop systemd-timesyncd
+sudo date -s '<heure actuelle de k8s-master, avec un peu de marge>'
+sudo systemctl restart kubelet
+```
+
+Répété à l'identique pour `k8s-worker2` (génération de son propre
+`kubelet.conf` sur master, dépôt via `/vagrant`, application locale,
+puis correction de sa propre dérive `systemd-timesyncd`).
+
+**Capture 11**
+
+![kubectl get nodes — les 3 nœuds Ready](screenshots/11-all-nodes-ready.png)
+
+Les 3 nœuds `Ready`. Deux mécanismes de resynchronisation automatique
+de l'horloge (`vboxadd-service` **et** `systemd-timesyncd`) ont dû être
+neutralisés sur chaque nœud pour que la simulation tienne assez
+longtemps — un détail d'infrastructure de lab, mais qui explique à lui
+seul pourquoi une bonne partie de cette démonstration a consisté à
+rattraper des horloges qui refusaient de rester où on les avait mises.
 
 ---
 
