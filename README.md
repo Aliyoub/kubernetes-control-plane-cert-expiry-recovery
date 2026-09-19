@@ -47,7 +47,16 @@ l'autre sens (voir "Décisions techniques clés").
 3. Constater la panne et la diagnostiquer.
 4. Corriger via `kubeadm certs renew all` et redémarrer le control
    plane.
-5. Vérifier que le cluster est de nouveau pleinement fonctionnel.
+5. Vérifier — et découvrir un premier piège secondaire : un
+   `~/.kube/config` local resté sur l'ancien certificat.
+6. *(suite du 5)* Corriger ce piège, puis découvrir un second piège :
+   `kubelet.conf`, propre à chaque nœud, hors du périmètre de
+   `kubeadm certs renew`.
+7. Régénérer et distribuer `kubelet.conf` sur les 3 nœuds — en
+   croisant, sur les workers, un troisième piège (dérive d'horloge via
+   `systemd-timesyncd`).
+8. Vérification fonctionnelle finale : le cluster répond, et sait
+   encore écrire dans etcd.
 
 ---
 
@@ -438,22 +447,109 @@ aboutir un cycle de vie complet d'objet.
 
 ## Décisions techniques clés
 
-<!-- TODO -->
+- **Avancer l'horloge des 3 nœuds ensemble, jamais un seul** — une
+  première tentative n'avançant que celle du control-plane a bien
+  provoqué la panne, mais a rendu les certificats renouvelés
+  **invalides pour les workers** restés à l'heure réelle (leur
+  `NotBefore`, ancré au moment du renouvellement, tombait dans leur
+  futur). En production, toutes les horloges d'un cluster sont déjà
+  synchronisées par NTP — reproduire fidèlement "un an a passé" exige
+  donc de faire avancer tout le monde d'un même pas, pas un nœud
+  isolément.
+- **Ne jamais essayer de revenir à l'heure réelle après un
+  renouvellement effectué sous horloge avancée** — les certificats
+  renouvelés portent un `NotBefore` fixé à cet instant fictif ; revenir
+  ensuite à l'heure réelle les rendrait "pas encore valides". La seule
+  sortie propre, une fois la démonstration terminée, est de restaurer
+  un snapshot pris avant toute manipulation — jamais de "rattraper"
+  l'horloge après coup.
+- **Renouveler tous les certificats d'un coup (`renew all`), pas un par
+  un** — sur un control plane mono-nœud, `etcd`, `apiserver`,
+  `controller-manager` et `scheduler` s'authentifient tous mutuellement
+  entre eux ; ne renouveler qu'un seul certificat déplace juste le
+  point de rupture au lieu de le résoudre.
+- **Redémarrer par déplacement des manifestes, jamais par simple
+  `systemctl restart kubelet`** — kubelet ne recharge le contenu TLS
+  d'un pod statique que si son manifeste disparaît puis réapparaît. Et
+  vérifier **explicitement** (`crictl ps` en boucle) que les anciens
+  conteneurs ont bien disparu avant de remettre les manifestes : `etcd`
+  met plus de temps que les autres à s'arrêter proprement, et le
+  remettre trop tôt annule l'arrêt en cours au lieu de provoquer une
+  recréation.
+- **`kubeadm certs renew all` ne couvre pas `kubelet.conf`** — le
+  kubeconfig que kubelet utilise pour s'authentifier lui-même auprès de
+  l'apiserver est un fichier propre à chaque nœud, généré une seule
+  fois à `kubeadm init`/`kubeadm join`, absent de la liste de
+  `kubeadm certs check-expiration`. Il doit être régénéré séparément
+  (`kubeadm init phase kubeconfig kubelet`) — et pour un worker, cette
+  régénération ne peut se faire que **sur le control-plane**, seul
+  détenteur de la clé privée de la CA.
+- **`~/.kube/config` est une copie, pas une référence** — tout
+  kubeconfig distribué à une équipe, un pipeline CI ou un outil tiers
+  avant le renouvellement reste signé avec l'ancien certificat et doit
+  être redistribué manuellement après coup.
+- **Neutraliser toute resynchronisation automatique de l'horloge avant
+  de commencer** — spécifique à ce lab VirtualBox, mais à vérifier
+  systématiquement sur tout environnement de test similaire :
+  `vboxadd-service` (Guest Additions) et `systemd-timesyncd` (NTP) sont
+  deux mécanismes indépendants, tous deux capables de silencieusement
+  annuler un changement d'horloge manuel.
 
 ---
 
 ## Compétences démontrées
 
-<!-- TODO -->
+- **Maîtrise opérationnelle de la PKI `kubeadm`** — cycle de vie des
+  certificats, diagnostic, renouvellement, mécanique de rechargement
+  des pods statiques
+- **Diagnostic d'incident à partir des seuls symptômes** — remonter
+  d'une erreur `x509` brute jusqu'à la cause racine, sur plusieurs
+  couches successives (certificats du control plane, puis
+  `~/.kube/config`, puis `kubelet.conf`, puis dérive d'horloge), sans
+  connaître la réponse à l'avance
+- **Compréhension fine des pods statiques Kubernetes** — pourquoi un
+  simple redémarrage de service ne suffit pas à recharger des
+  certificats, et pourquoi l'ordre des opérations (vérifier l'arrêt
+  avant de relancer) compte
+- **Distribution de credentials signés depuis le control-plane** —
+  générer un `kubeconfig` pour un autre nœud à partir de la clé privée
+  de la CA, que ce nœud ne possède pas lui-même
+- **Détection de pièges opérationnels réels et sous-documentés** — le
+  `~/.kube/config` périmé et le `kubelet.conf` hors du périmètre de
+  `kubeadm certs renew`, deux causes fréquentes d'incidents "le
+  renouvellement n'a pas marché" en production
+- **Discipline d'expérimentation sûre** — snapshot systématique avant
+  toute action destructive sur les 3 nœuds, restauration propre en fin
+  de procédure plutôt que de tenter de "réparer" un état devenu
+  incohérent
 
 ---
 
 ## Reproduire cette démonstration
 
-<!-- TODO -->
+⚠️ Cette procédure casse volontairement le control plane du cluster
+ciblé et modifie l'horloge système de ses 3 nœuds. À tester uniquement
+sur un cluster de lab/formation, jamais en production, et jamais sans
+un snapshot ou une sauvegarde préalable des 3 nœuds.
+
+```bash
+git clone <url-de-ce-repo>
+cd kubernetes-control-plane-cert-expiry-recovery
+
+# Sur les 3 nœuds (ex. via SSH) :
+# suivre les étapes 1 à 8 décrites ci-dessus
+```
+
+Nettoyage : restaurer le snapshot pris avant la manipulation de
+l'horloge sur les 3 nœuds (`vagrant snapshot restore <vm> <nom>` dans
+ce lab), plutôt que d'essayer de remettre les horloges à l'heure
+manuellement.
 
 ---
 
 ## Documentation
 
-<!-- TODO -->
+- [kubeadm certs — gestion des certificats](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/)
+- [Certificates — PKI Kubernetes](https://kubernetes.io/docs/setup/best-practices/certificates/)
+- [Static Pods](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/)
+- [kubelet TLS bootstrapping](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/)
