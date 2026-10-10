@@ -45,16 +45,16 @@ l'autre sens (voir "Décisions techniques clés").
 2. Avancer l'horloge système des **3 nœuds** au-delà de la date
    d'expiration des certificats.
 3. Constater la panne et la diagnostiquer.
-4. Corriger via `kubeadm certs renew all` et redémarrer le control
-   plane.
-5. Vérifier — et découvrir un premier piège secondaire : un
-   `~/.kube/config` local resté sur l'ancien certificat.
-6. *(suite du 5)* Corriger ce piège, puis découvrir un second piège :
+4. Renouveler les certificats via `kubeadm certs renew all`.
+5. Redémarrer le control plane pour qu'il charge les nouveaux
+   certificats.
+6. Vérifier — et découvrir un premier piège : un `~/.kube/config`
+   local resté sur l'ancien certificat.
+7. Corriger ce piège, puis découvrir un deuxième piège :
    `kubelet.conf`, propre à chaque nœud, hors du périmètre de
-   `kubeadm certs renew`.
-7. Régénérer et distribuer `kubelet.conf` sur les 3 nœuds — en
-   croisant, sur les workers, un troisième piège (dérive d'horloge via
-   `systemd-timesyncd`).
+   `kubeadm certs renew`. Le régénérer et le distribuer sur les 3
+   nœuds — en croisant, sur les workers, un troisième piège (dérive
+   d'horloge via `systemd-timesyncd`).
 8. Vérification fonctionnelle finale : le cluster répond, et sait
    encore écrire dans etcd.
 
@@ -80,7 +80,7 @@ Cluster pleinement opérationnel (3 nœuds `Ready`, tous les pods
 ## Étape 2 — Provoquer l'expiration
 
 Sur **les 3 nœuds** (pas seulement le control-plane — voir "Décisions
-techniques clés" pour pourquoi c'est important) :
+techniques clés" pour comprendre pourquoi c'est important) :
 
 ```bash
 sudo systemctl stop vboxadd-service   # empêche la resynchro auto de l'horloge (spécifique à ce lab VirtualBox)
@@ -197,7 +197,7 @@ les certificats renouvelés sont bien ceux désormais chargés.
 
 ---
 
-## Étape 6 — Le piège secondaire : un `~/.kube/config` périmé
+## Étape 6 — Un premier piège : un `~/.kube/config` périmé
 
 ```bash
 kubectl get nodes
@@ -239,7 +239,7 @@ place.
 
 ---
 
-## Étape 7 — Un troisième piège : `kubelet.conf` n'est pas non plus couvert
+## Étape 7 — Un deuxième piège : `kubelet.conf` n'est pas non plus couvert
 
 `kubectl` fonctionne de nouveau, mais les 3 nœuds passent `NotReady` :
 
@@ -372,7 +372,7 @@ sudo cp /vagrant/kubelet-worker1.conf.tmp /etc/kubernetes/kubelet.conf
 sudo systemctl restart kubelet
 ```
 
-### Un piège de plus : la dérive d'horloge des workers
+### Un troisième piège : la dérive d'horloge des workers
 
 Après ce redémarrage, `k8s-worker1` restait bloqué avec la même erreur
 `x509`, mais tournée différemment : *"current time ... is before ..."*
@@ -428,7 +428,8 @@ control plane : l'horloge encore avancée à 2027 invalide aussi les
 certificats TLS **des registres d'images externes** (leurs certificats
 réels, eux, expirent bien avant 2027) — toute connexion HTTPS sortante
 en souffre également, pas seulement celles vers l'apiserver. Rien à voir
-avec `kubeadm` ; ça se résorbera dès le retour à l'heure réelle.
+avec `kubeadm` ; ça disparaîtra avec la restauration du snapshot (voir
+"Décisions techniques clés").
 
 Le test qui prouve réellement que le control plane est opérationnel ne
 dépend d'aucune image externe :
@@ -537,7 +538,7 @@ sur un cluster de lab/formation, jamais en production, et jamais sans
 un snapshot ou une sauvegarde préalable des 3 nœuds.
 
 ```bash
-git clone <url-de-ce-repo>
+git clone https://github.com/Aliyoub/kubernetes-control-plane-cert-expiry-recovery.git
 cd kubernetes-control-plane-cert-expiry-recovery
 
 # Sur les 3 nœuds (ex. via SSH) :
