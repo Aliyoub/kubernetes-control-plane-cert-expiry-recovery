@@ -135,6 +135,10 @@ sudo kubeadm certs renew all
 
 ![Certificats renouvelés via kubeadm certs renew all](screenshots/04-renew-certs.png)
 
+---
+
+## Étape 5 — Redémarrer le control plane avec les certificats renouvelés
+
 Renouveler les fichiers ne suffit pas : les processus du control plane
 ont déjà les anciens certificats chargés en mémoire. kubelet ne relit
 un pod statique que si son fichier manifeste change (ou disparaît) —
