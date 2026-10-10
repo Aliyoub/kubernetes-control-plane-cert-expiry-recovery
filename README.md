@@ -188,9 +188,9 @@ sleep 20
 sudo crictl ps | grep -E "etcd|kube-apiserver|kube-controller|kube-scheduler"
 ```
 
-**Capture 5**
+**Capture 5c**
 
-![Les 4 composants du control plane repartis avec de nouveaux conteneurs (ATTEMPT 0)](screenshots/05-restart-control-plane.png)
+![Les 4 composants du control plane repartis avec de nouveaux conteneurs (ATTEMPT 0)](screenshots/05c-restart-control-plane.png)
 
 Quatre nouveaux ID de conteneur, démarrés à l'instant — la preuve que
 les certificats renouvelés sont bien ceux désormais chargés.
