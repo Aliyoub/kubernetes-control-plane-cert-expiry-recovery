@@ -150,9 +150,9 @@ sudo mkdir -p /tmp/manifests-backup
 sudo mv /etc/kubernetes/manifests/*.yaml /tmp/manifests-backup/
 ```
 
-**Capture 4b**
+**Capture 5a**
 
-![Manifestes déplacés — /etc/kubernetes/manifests/ vide, les 4 fichiers dans /tmp/manifests-backup/](screenshots/04b-manifests-moved.png)
+![Manifestes déplacés — /etc/kubernetes/manifests/ vide, les 4 fichiers dans /tmp/manifests-backup/](screenshots/05a-manifests-moved.png)
 
 kubelet surveille en permanence le contenu de
 `/etc/kubernetes/manifests/` (un simple dossier, pas une API) : dès
@@ -172,9 +172,9 @@ sudo crictl ps | grep -E "etcd|kube-apiserver|kube-controller|kube-scheduler"
 # répéter jusqu'à ce que la liste soit vide
 ```
 
-**Capture 4c**
+**Capture 5b**
 
-![Les 4 conteneurs ont disparu — seul calico-kube-controllers (sans rapport) reste](screenshots/04c-containers-gone.png)
+![Les 4 conteneurs ont disparu — seul calico-kube-controllers (sans rapport) reste](screenshots/05b-containers-gone.png)
 
 Confirmation avant de remettre les manifestes : les 4 anciens
 conteneurs ont bien été tués, pas seulement "en cours d'arrêt". Les
